@@ -509,8 +509,17 @@ def assemble(nodes, cells, facets, K_value, source, g_dir, dirichlet_edges,
 
     # A 是"通量质量矩阵"，大小 棱数 × 棱数
     # B 是"散度矩阵"，大小 单元数 × 棱数
-    A = np.zeros((n_edges, n_edges))
-    B = np.zeros((n_cells, n_edges))
+    #
+    # ★ 大网格必须用稀疏矩阵存：
+    #   nx = 128 时棱数约 49408，稠密 A 要 49408^2 * 8 B = 19.5 GB，直接爆掉。
+    #   用 lil_matrix 的好处是：下面 A[e_k, e_l] += ... 这种写法完全不用改，
+    #   和 numpy 数组一模一样；只是存的是稀疏结构，规模上去也不会吃内存。
+    if HAS_SCIPY:
+        A = sp.lil_matrix((n_edges, n_edges))
+        B = sp.lil_matrix((n_cells, n_edges))
+    else:
+        A = np.zeros((n_edges, n_edges))
+        B = np.zeros((n_cells, n_edges))
 
     # 两个右端项
     rhs_q = np.zeros(n_edges)       # 达西定律那个方程的右端
@@ -609,6 +618,9 @@ def assemble(nodes, cells, facets, K_value, source, g_dir, dirichlet_edges,
         B[:, e] = 0.0
         rhs_q[e] = 0.0
 
+    # 稀疏存储转成 csr（求解器最爱），稠密情形原样返回
+    if HAS_SCIPY:
+        return sp.csr_matrix(A), sp.csr_matrix(B), rhs_q, rhs_p
     return A, B, rhs_q, rhs_p
 
 
@@ -628,11 +640,9 @@ def solve_saddle(A, B, rhs_q, rhs_p):
     n_p = B.shape[0]
 
     if HAS_SCIPY:
-        # 稀疏矩阵：适合 nx=32、64 这种规模
-        A_sp = sp.csr_matrix(A)
-        B_sp = sp.csr_matrix(B)
-        big = sp.bmat([[A_sp, -B_sp.T],
-                       [B_sp, None]], format="csr")
+        # A、B 在 assemble 里已经转成 csr，这里直接拼装即可
+        big = sp.bmat([[A, -B.T],
+                       [B, None]], format="csr")
         rhs = np.concatenate([rhs_q, rhs_p])
         sol = spla.spsolve(big, rhs)        # 稀疏 LU 直接解
     else:
@@ -833,7 +843,7 @@ def case2_convergence():
         p = sin(pi x) * sin(pi y)
     则
         q = -grad p = ( -pi cos(pi x) sin(pi y),  -pi sin(pi x) cos(pi y) )
-        f = -div q = 2 pi^2 sin(pi x) sin(pi y)
+        f = div q = -Laplacian(p) = 2 pi^2 sin(pi x) sin(pi y)
 
     四周都给 p = 0（自然边界条件，进右端）。
 
@@ -861,7 +871,7 @@ def case2_convergence():
         return qx, qy
 
     def source(x, y):
-        # f = -div q = 2 pi^2 sin sin
+        # f = div q = -Laplacian(p) = 2 pi^2 sin sin
         return 2.0 * pi * pi * math.sin(pi * x) * math.sin(pi * y)
 
     def g_dir(x, y):
@@ -870,15 +880,20 @@ def case2_convergence():
     # 记录每一层的：网格尺寸 h、棱数、单元数、两个误差
     rows = []
 
-    # 基准网格 4×4，然后加密 0、1、2、3 次
-    base_n = 4
+    # 基准网格 16×16，然后加密 0、1、2、3 次
+    #   -> 实际跑的是 16、32、64、128 四档（h = 1/16, 1/32, 1/64, 1/128）
+    #   网格太粗时（例如 4、8）误差本身很小，收敛阶容易被离散化的"前渐近区"带偏；
+    #   从 16 起四档都是渐近区，阶数会稳稳贴在 1 上。
+    base_n = 16
+    # 初始网格只生成一次，后续各层直接细分上一层的网格。
+    nodes, cells = make_rect_mesh(base_n, base_n)
     for level in range(4):
-        nodes, cells = make_rect_mesh(base_n, base_n)
-        nodes, cells = refine_times(nodes, cells, level)
+        if level > 0:
+            nodes, cells = refine_uniform(nodes, cells)
 
         facets = build_facets(nodes, cells)
 
-        # 本层网格的 h：相邻节点间距（基准 1/4，每加密一次减半）
+        # 本层网格的 h：相邻节点间距（基准 1/base_n，每加密一次减半）
         h = 1.0 / (base_n * (2 ** level))
 
         # 所有边界棱都给压力 Dirichlet
@@ -989,9 +1004,11 @@ def draw_refinement_figure(base_n=2, levels=3, size=440):
     from PIL import Image, ImageDraw, ImageFont
 
     images = []
+    # 与收敛实验一致：保留当前网格，每次只向下一层加密一次。
+    nodes, cells = make_rect_mesh(base_n, base_n)
     for level in range(levels + 1):
-        nodes, cells = make_rect_mesh(base_n, base_n)
-        nodes, cells = refine_times(nodes, cells, level)
+        if level > 0:
+            nodes, cells = refine_uniform(nodes, cells)
         path = os.path.join(OUTDIR, "_tmp_level%d.png" % level)
         draw_mesh(nodes, cells, path, size=size,
                   title="加密 %d 次：单元 %d 个" % (level, len(cells)))
@@ -1211,14 +1228,14 @@ def _run_all():
 
     # ---- 先看网格长什么样 ----
     print("【网格】")
-    for n in (2, 4, 8):
+    for n in (16, 32, 64, 128):
         nodes, cells = make_rect_mesh(n, n)
-        print("  %d×%d 网格：节点 %d 个，单元 %d 个"
+        print("  %3d×%-3d 网格：节点 %6d 个，单元 %6d 个"
               % (n, n, len(nodes), len(cells)))
     print()
 
     # 演示"加密一次"对网格规模的影响
-    nodes, cells = make_rect_mesh(4, 4)
+    nodes, cells = make_rect_mesh(16, 16)
     print("  加密前：单元 %d" % len(cells))
     for k in range(1, 4):
         nodes, cells = refine_uniform(nodes, cells)

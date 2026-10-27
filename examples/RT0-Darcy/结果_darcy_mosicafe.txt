@@ -1,6 +1,6 @@
 ﻿====================================================================================================
 用 MosicaFE 的 RT0×P0 空间求解 Darcy 方程
-   库目录（只读，未修改）：C:\Users\Lenovo\Desktop\有限元\MosicaFE-repo\MosicaFE
+   库目录（只读，未修改）：C:\Users\Lenovo\Desktop\有限元\MosicaFE-master
    A_ij = ∫ (K^{-1}φ_i)·φ_j  ；其余块与求解流程全部复用库
 ====================================================================================================
 
@@ -58,7 +58,7 @@
 ====================================================================================================
 【⑥ 注册表】因为它带了 @register_problem("darcy")，可以直接用库的 create_problem
 ====================================================================================================
-   已注册的 PDE：['conduction', 'darcy', 'mixed_poisson', 'poisson', 'reaction_diffusion']
+   已注册的 PDE：['darcy', 'mixed_poisson', 'poisson', 'reaction_diffusion']
    create_problem('darcy', V, f=..., K=...) -> <DarcyProblem space=RT0-P0 dim=2 flux=208 pressure=128 mode=cell>
    解：max|P| = 9.7097e-01，max|Q| = 1.1468e+00
 
